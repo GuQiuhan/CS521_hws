@@ -5,12 +5,10 @@ import torch
 import torch.nn as nn
 from tqdm.auto import tqdm
 
-import os, sys
-sys.path.append(os.path.dirname(__file__))
-from llm_attacks.base.attack_manager import AttackPrompt, MultiPromptAttack, PromptManager
+from llm_attacks import AttackPrompt, MultiPromptAttack, PromptManager
 from llm_attacks import get_embedding_matrix, get_embeddings
 
-from coherent import *
+
 def token_gradients(model, input_ids, input_slice, target_slice, loss_slice):
 
     """
@@ -184,51 +182,10 @@ class GCGMultiPromptAttack(MultiPromptAttack):
                     if verbose:
                         progress.set_description(f"loss={loss[j*batch_size:(j+1)*batch_size].min().item()/(i+1):.4f}")
 
-            #min_idx = loss.argmin()
-            #model_idx = min_idx // batch_size
-            #batch_idx = min_idx % batch_size
-            #next_control, cand_loss = control_cands[model_idx][batch_idx], loss[min_idx]
-            # ===== BEGIN: coherence-aware selection =====
-            # 1) flatten candidates to strings in the SAME order as loss
-            all_cand_strings = []
-            for cand_list in control_cands:
-                # cand_list is a tensor of token IDs (batch_size x seq_len)
-                texts = self.workers[0].tokenizer.batch_decode(cand_list, skip_special_tokens=True)
-                all_cand_strings.extend(texts)
-
-            # 2) compute coherence using worker[0]'s model (or swap in a small LM)
-            coh = lm_coherence_scores(
-                all_cand_strings,
-                model=self.workers[0].model,
-                tokenizer=self.workers[0].tokenizer,
-                device=main_device,
-                batch_size=256,   # tune if needed
-            ).to(main_device)
-
-            # 3) normalize coherence to [0,1]
-            coh_min, coh_max = coh.min(), coh.max()
-            coh_norm = (coh - coh_min) / (coh_max - coh_min) if (coh_max > coh_min) else torch.zeros_like(coh)
-
-            # 4) normalize loss to [0,1] as a "higher is better" signal
-            loss_cpu = loss.detach()
-            Lmin, Lmax = loss_cpu.min(), loss_cpu.max()
-            loss_norm = 1.0 - (loss_cpu - Lmin) / (Lmax - Lmin) if (Lmax > Lmin) else torch.ones_like(loss_cpu)
-            loss_norm = loss_norm.to(main_device)
-
-            # 5) combine (alpha trades off attack loss vs. coherence)
-            alpha = 0.25  # ↑ for more coherence emphasis
-            combined = (1.0 - alpha) * loss_norm + alpha * coh_norm
-
-            # 6) pick argmax on combined score
-            best_idx = combined.argmax()
-            model_idx = best_idx // batch_size
-            batch_idx = best_idx % batch_size
-            next_control = control_cands[model_idx][batch_idx]
-            cand_loss = loss[best_idx]  # keep original loss for logging
-            # ===== END: coherence-aware selection =====
-
-
-
+            min_idx = loss.argmin()
+            model_idx = min_idx // batch_size
+            batch_idx = min_idx % batch_size
+            next_control, cand_loss = control_cands[model_idx][batch_idx], loss[min_idx]
         
         del control_cands, loss ; gc.collect()
 
